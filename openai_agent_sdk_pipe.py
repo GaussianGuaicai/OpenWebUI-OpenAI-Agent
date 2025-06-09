@@ -126,6 +126,10 @@ class Pipe:
             default=None,
             description="HTTP Proxy URL for OpenAI API requests",
         )
+        STRUCTURE_TOOL_CALL: bool = Field(
+            default=False,
+            description="Whether to use strict JSON schema for tool calls",
+        )
 
     class EventHooks(RunHooks):
         def __init__(self, event_emitter:EventEmitter):
@@ -190,16 +194,17 @@ class Pipe:
 
                 params_schema = tool_data["spec"]["parameters"]
 
-                # # OpenAi Function Calling Strict mode Requires the following:
-                # params_schema['required'] = tuple(params_schema['properties'].keys())
-                # params_schema['additionalProperties'] = False
+                # OpenAi Function Calling Strict mode Requires the following:
+                if self.valves.STRUCTURE_TOOL_CALL:
+                    params_schema['required'] = tuple(params_schema['properties'].keys())
+                    params_schema['additionalProperties'] = False
 
                 tool = FunctionTool(
                     name = tool_unique_name,
                     description = tool_data["spec"]["description"],
                     params_json_schema=params_schema,
                     on_invoke_tool=run_function,
-                    strict_json_schema=False,
+                    strict_json_schema=self.valves.STRUCTURE_TOOL_CALL,
                 )
 
                 tools.append(tool)
