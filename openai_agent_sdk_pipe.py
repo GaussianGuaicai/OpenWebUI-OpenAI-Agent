@@ -15,7 +15,6 @@ from typing import (
     Awaitable,
     Callable,
     Any,
-    Iterable,
     Literal,
     Mapping,
     NotRequired,
@@ -209,6 +208,8 @@ class Pipe:
         custom_client = AsyncOpenAI(base_url=self.valves.OPENAI_BASE_URL, api_key=self.valves.OPENAI_API_KEY)
         set_default_openai_client(custom_client)
 
+        body["messages"] = self.transform_message_content(body["messages"])
+
         tools = []
         tool_maps = dict()
         if __tools__ is not None:
@@ -299,8 +300,8 @@ class Pipe:
                 # When items are generated, print them
                 elif event.type == "run_item_stream_event":
                     if event.item.type == "tool_call_item":
-                        logging.info(f"Tool call: {event.item.raw_item.id}")
-                        await ev.notification(f"Tool call: {str(event.item.raw_item.id)}")
+                        logging.info(f"Tool call: {event.item.raw_item.model_dump()}")
+                        await ev.notification(f"Tool call: {str(event.item.raw_item)}")
                     elif event.item.type == "tool_call_output_item":
                         # await ev.status(f"Tool call output: {event.item.raw_item}", done=False)
                         pass
@@ -314,6 +315,33 @@ class Pipe:
             logging.exception(f"Error during streaming: {e}")
             yield e
             return
+
+    def transform_message_content(self, messages:list):
+        """
+        Transform the content of messages to match the OpenAI Response API format.
+        """
+        for msg in messages:
+            if isinstance(msg.get("content"), list):
+                new_content = []
+                for content in msg["content"]:
+                    if isinstance(content, dict):
+                        type_map = {"text": "input_text", "image_url": "input_image"}
+                        if content.get("type") in type_map:
+                            content["type"] = type_map[content["type"]]
+                            
+                            # Handle input_image type specifically
+                            if content["type"] == "input_image" and isinstance(content.get("image_url"), dict):
+                                url_obj:dict = content.get("image_url") # type: ignore
+                                if "url" in url_obj:
+                                    content["image_url"] = url_obj["url"]
+                        else:
+                            raise ValueError(f"Unknown content type: {content.get('type')}")
+                        new_content.append(content)
+                    else:
+                        new_content.append(content)
+                msg["content"] = new_content
+
+        return messages
 
     def filter_messages_role(self, messages:list, role:str = "system"):
         if isinstance(messages, list):
