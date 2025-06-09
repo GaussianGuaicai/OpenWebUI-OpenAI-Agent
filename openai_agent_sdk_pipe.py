@@ -17,7 +17,6 @@ from typing import (
     Any,
     Literal,
     Mapping,
-    NotRequired,
     Optional,
     TypedDict,
     Union,
@@ -35,48 +34,9 @@ from agents import ModelSettings, set_default_openai_client, function_tool
 from agents import Agent, Runner, RunHooks, RunContextWrapper, Usage, FunctionTool, RunContextWrapper
 from agents.extensions import handoff_prompt
 
-class ToolSpecParametersProperty(TypedDict):
-    description: str
-    type: str
-    items: NotRequired[dict[str, str]]
-    default: NotRequired[Any]
-    enum: NotRequired[list[str]]
-    maxItems: NotRequired[int]
-    minItems: NotRequired[int]
-    prefixItems: NotRequired[list[dict[str, Any]]]
-
-
-class ToolSpecParameters(TypedDict):
-    properties: dict[str, ToolSpecParametersProperty]
-    required: NotRequired[list[str]]
-    type: str
-    additionalProperties: NotRequired[bool]
-
-
-class ToolSpec(TypedDict):
-    name: str
-    description: str
-    parameters: ToolSpecParameters
-
-
-class ToolCallable(TypedDict):
-    toolkit_id: str
-    callable: Callable
-    spec: ToolSpec
-    pydantic_model: NotRequired[BaseModel]
-    file_handler: bool
-    citation: bool
-
-
-class ToolCall(BaseModel):
-    id: str
-    name: str
-    arguments: str
-
 
 class EventEmitterMessageData(TypedDict):
     content: str
-
 
 class EventEmitterStatusData(TypedDict):
     description: str
