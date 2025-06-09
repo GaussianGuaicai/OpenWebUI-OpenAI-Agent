@@ -1,0 +1,341 @@
+"""
+title: OpenAI Agent SDK Pipe
+author: Gaussian
+required_open_webui_version: 0.5.0
+version: 0.0.1
+license: MIT
+"""
+
+from dataclasses import dataclass
+import inspect
+import logging
+from typing import (
+    AsyncGenerator,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Any,
+    Iterable,
+    Literal,
+    Mapping,
+    NotRequired,
+    Optional,
+    TypedDict,
+    Union,
+)
+import html
+import asyncio
+import os
+from pydantic import BaseModel, Field
+import json
+
+from openai import AsyncOpenAI
+from openai.types.responses import ResponseTextDeltaEvent
+from openai.types import Reasoning
+from agents import ModelSettings, set_default_openai_client, function_tool
+from agents import Agent, Runner, RunHooks, RunContextWrapper, Usage, FunctionTool, RunContextWrapper
+from agents.extensions import handoff_prompt
+
+class ToolSpecParametersProperty(TypedDict):
+    description: str
+    type: str
+    items: NotRequired[dict[str, str]]
+    default: NotRequired[Any]
+    enum: NotRequired[list[str]]
+    maxItems: NotRequired[int]
+    minItems: NotRequired[int]
+    prefixItems: NotRequired[list[dict[str, Any]]]
+
+
+class ToolSpecParameters(TypedDict):
+    properties: dict[str, ToolSpecParametersProperty]
+    required: NotRequired[list[str]]
+    type: str
+    additionalProperties: NotRequired[bool]
+
+
+class ToolSpec(TypedDict):
+    name: str
+    description: str
+    parameters: ToolSpecParameters
+
+
+class ToolCallable(TypedDict):
+    toolkit_id: str
+    callable: Callable
+    spec: ToolSpec
+    pydantic_model: NotRequired[BaseModel]
+    file_handler: bool
+    citation: bool
+
+
+class ToolCall(BaseModel):
+    id: str
+    name: str
+    arguments: str
+
+
+class EventEmitterMessageData(TypedDict):
+    content: str
+
+
+class EventEmitterStatusData(TypedDict):
+    description: str
+    done: Optional[bool]
+
+class EventEmitterNotificationData(TypedDict):
+    type: Literal["info","success", "warning", "error"]
+    content: str
+
+class EventEmitterStatus(TypedDict):
+    type: Literal["status"]
+    data: EventEmitterStatusData
+
+class EventEmitterNotification(TypedDict):
+    type: Literal["notification"]
+    data: EventEmitterNotificationData
+
+class EventEmitterMessage(TypedDict):
+    type: Literal["message"]
+    data: EventEmitterMessageData
+
+
+class Metadata(TypedDict):
+    chat_id: str
+    user_id: str
+    message_id: str
+
+
+class EventEmitter:
+    def __init__(
+        self,
+        __event_emitter__: Optional[
+            Callable[[Mapping[str, Any]], Awaitable[None]]
+        ] = None,
+    ):
+        self.event_emitter = __event_emitter__
+
+    async def emit(
+        self, message: Union[EventEmitterMessage, EventEmitterStatus, EventEmitterNotification]
+    ) -> None:
+        if self.event_emitter:
+            maybe_future = self.event_emitter(message)
+            if asyncio.isfuture(maybe_future) or inspect.isawaitable(maybe_future):
+                await maybe_future
+
+    async def status(self, description: str, done: Optional[bool] = None) -> None:
+        await self.emit(
+            EventEmitterStatus(
+                type="status",
+                data=EventEmitterStatusData(description=description, done=done),
+            )
+        )
+
+    async def notification(self, content: str, type: Literal["info", "success", "warning", "error"] = "info") -> None:
+        await self.emit(
+            EventEmitterNotification(
+                type="notification",
+                data=EventEmitterNotificationData(content=content, type=type),
+            )
+        )
+
+    async def result(self, summary: str, content: str) -> None:
+        await self.emit(
+            EventEmitterMessage(
+                type="message",
+                data=EventEmitterMessageData(
+                    content=f'\n<details type="tool_calls" done="true" results="{html.escape(content)}">\n<summary>{summary}</summary>\n{content}\n</details>',
+                ),
+            )
+        )
+
+@dataclass
+class Tools:
+    tools: dict[str, Callable]
+
+class Pipe:
+    class Valves(BaseModel):
+        OPENAI_API_KEY: str = Field(default="", description="OpenAI API key")
+        OPENAI_BASE_URL: str = Field(
+            default="https://api.openai.com/v1", description="OpenAI API base URL"
+        )
+        MAIN_MODEL: str = Field(
+            default="gpt-4.1-nano",
+            description="Main Agent Model ID",
+        )
+        HTTP_PROXY: Optional[str] = Field(
+            default=None,
+            description="HTTP Proxy URL for OpenAI API requests",
+        )
+
+    class EventHooks(RunHooks):
+        def __init__(self, event_emitter:EventEmitter):
+            self.event_counter = 0
+            self.event_emitter = event_emitter
+
+        def _usage_to_str(self, usage: Usage) -> str:
+            message = f"Usage: {usage.requests} requests, {usage.input_tokens} input tokens, {usage.output_tokens} output tokens, {usage.total_tokens} total tokens"
+            return message
+
+        async def on_agent_end(self, context: RunContextWrapper, agent: Agent, output: Any) -> None:
+            self.event_counter += 1
+            await self.event_emitter.status(f"{agent.name} Process Complete!",done=True)
+
+    def __init__(self):
+        self.valves = self.Valves()
+        self.type = "manifold"
+        self.name = "openai-agent-sdk/"
+
+    async def pipe(
+        self,
+        body: dict,
+        __metadata__: Metadata,
+        __user__: dict | None = None,
+        __task__: str | None = None,
+        __tools__: Optional[dict[str, dict[str,Any]]] = None,
+        __event_emitter__: Callable[[Mapping[str, Any]], Awaitable[None]] | None = None,
+    ):
+        # This is where you can add your custom pipelines like RAG.
+        print(f"pipe:{__name__}")
+
+        ev = EventEmitter(__event_emitter__)
+        ev_hooks = self.EventHooks(ev)
+
+        if self.valves.HTTP_PROXY:
+            os.environ["HTTP_PROXY"] = self.valves.HTTP_PROXY
+            os.environ["HTTPS_PROXY"] = self.valves.HTTP_PROXY
+            print(f"Using HTTP Proxy: {self.valves.HTTP_PROXY}")
+
+        custom_client = AsyncOpenAI(base_url=self.valves.OPENAI_BASE_URL, api_key=self.valves.OPENAI_API_KEY)
+        set_default_openai_client(custom_client)
+
+        tools = []
+        tool_maps = dict()
+        if __tools__ is not None:
+            # print(__tools__)
+            for tool_unique_name, tool_data in __tools__.items():
+                async def run_function(ctx: RunContextWrapper[Tools], args: str, tool_name=tool_unique_name) -> str:
+                    parsed = json.loads(args)
+                    try:
+                        func = ctx.context.tools[tool_name]
+                        if inspect.iscoroutinefunction(func):
+                            return await func(**parsed)
+                        else:
+                            return func(**parsed)
+                    except Exception as e:
+                        # OpenAI Agent SDK requires errors handle inside this function
+                        logging.exception(f"Error running tool {tool_name}: {e}")
+                        return f"Error running tool {tool_name}: {str(e)}"
+
+                params_schema = tool_data["spec"]["parameters"]
+
+                # # OpenAi Function Calling Strict mode Requires the following:
+                # params_schema['required'] = tuple(params_schema['properties'].keys())
+                # params_schema['additionalProperties'] = False
+
+                tool = FunctionTool(
+                    name = tool_unique_name,
+                    description = tool_data["spec"]["description"],
+                    params_json_schema=params_schema,
+                    on_invoke_tool=run_function,
+                    strict_json_schema=False,
+                )
+
+                tools.append(tool)
+                tool_maps[tool_unique_name] = tool_data["callable"]
+                
+        tool_infos = Tools(tools=tool_maps)
+        
+        general_agent_instructions = "You answer general questions and perform basic coding tasks."
+        general_agent = Agent(
+            "General Agent",
+            model="gpt-4.1-mini",
+            instructions=general_agent_instructions,
+            handoff_description="Use this agent for general questions and basic coding tasks.",
+            tools=tools
+        )
+
+        reasoning_agent_instructions = "You perform complex reasoning tasks and provide detailed explanations, also perform complex coding tasks."
+        reasoning_agent = Agent(
+            "Reasoning Agent",
+            model="o4-mini",
+            instructions=reasoning_agent_instructions,
+            handoff_description="Use this agent for complex reasoning tasks that require detailed explanations or advanced coding.",
+            model_settings=ModelSettings(
+                reasoning=Reasoning(effort="medium"),
+            ),
+            tools=tools
+        )
+
+        main_agent_name = "Main Agent"
+        main_agent_instructions = "You determine which agent to use based on the user's question, and you should always handoff to the appropriate agent for processing."
+        main_agent_instructions = handoff_prompt.prompt_with_handoff_instructions(main_agent_instructions)
+        main_agent = Agent(
+            main_agent_name,
+            model=self.valves.MAIN_MODEL,
+            instructions=main_agent_instructions,
+            handoffs=[general_agent,reasoning_agent],
+        )
+
+        result = Runner.run_streamed(
+            main_agent, body["messages"],
+            max_turns=2,
+            hooks=ev_hooks,
+            context=tool_infos
+        )
+        await ev.status("Processing...", done=False)
+
+        try:
+            async for event in result.stream_events():
+                # We'll ignore the raw responses event deltas
+                if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
+                    yield event.data.delta
+
+                # When the agent updates, print that
+                elif event.type == "agent_updated_stream_event":
+                    await ev.status(f"{event.new_agent.name} is Processing...", done=False)
+                    continue
+                
+                # When items are generated, print them
+                elif event.type == "run_item_stream_event":
+                    if event.item.type == "tool_call_item":
+                        logging.info(f"Tool call: {event.item.raw_item.id}")
+                        await ev.notification(f"Tool call: {str(event.item.raw_item.id)}")
+                    elif event.item.type == "tool_call_output_item":
+                        # await ev.status(f"Tool call output: {event.item.raw_item}", done=False)
+                        pass
+                    elif event.item.type == "message_output_item":
+                        # await ev.notification(ItemHelpers.text_message_output(event.item))
+                        pass
+                    else:
+                        pass  # Ignore other event types
+                    continue
+        except Exception as e:
+            logging.exception(f"Error during streaming: {e}")
+            yield e
+            return
+
+    def filter_messages_role(self, messages:list, role:str = "system"):
+        if isinstance(messages, list):
+            filtered_messages = [
+                msg for msg in messages if msg.get("role") != role
+            ]
+        else:
+            filtered_messages = messages
+        return filtered_messages
+
+    def get_user_instruction(self, body):
+        try:
+            system_instruction = ""
+            if (
+                "messages" in body
+                and isinstance(body["messages"], list)
+                and len(body["messages"]) > 0
+                and "role" in body["messages"][0]
+                and body["messages"][0]["role"] == "system"
+                and "content" in body["messages"][0]
+            ):
+                system_instruction = str(body["messages"][0]["content"])
+        except Exception:
+            system_instruction = ""
+        return system_instruction
