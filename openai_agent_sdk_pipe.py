@@ -30,10 +30,11 @@ import json
 from openai import AsyncOpenAI
 from openai.types.responses import ResponseTextDeltaEvent
 from openai.types import Reasoning
-from agents import ModelSettings, set_default_openai_client, function_tool
+from agents import ItemHelpers, MessageOutputItem, ModelSettings, RunItem, RunItemStreamEvent, TContext, Tool, ToolCallItem, ToolCallOutputItem, set_default_openai_client, function_tool
 from agents import Agent, Runner, RunHooks, RunContextWrapper, Usage, FunctionTool, RunContextWrapper
 from agents.extensions import handoff_prompt
 
+HTML_UI_PROCESSING = "<div style=display:flex><span>{content}</span><svg width=20 height=20><circle cx=10 cy=10 r=7 fill=none stroke=#0001 stroke-width=3 /><circle cx=10 cy=10 r=7 fill=none stroke=#3498db stroke-width=3 stroke-dasharray=11><animateTransform attributeName=transform type=rotate from=0,10,10 to=360,10,10 dur=1s repeatCount=indefinite /></circle></svg></div>"
 
 class EventEmitterMessageData(TypedDict):
     content: str
@@ -55,7 +56,7 @@ class EventEmitterNotification(TypedDict):
     data: EventEmitterNotificationData
 
 class EventEmitterMessage(TypedDict):
-    type: Literal["message"]
+    type: Literal["chat:message","chat:message:delta"]
     data: EventEmitterMessageData
 
 
@@ -98,12 +99,12 @@ class EventEmitter:
             )
         )
 
-    async def result(self, summary: str, content: str) -> None:
+    async def message(self,content: str, append = False) -> None:
         await self.emit(
             EventEmitterMessage(
-                type="message",
+                type="chat:message:delta" if append else "chat:message",
                 data=EventEmitterMessageData(
-                    content=f'\n<details type="tool_calls" done="true" results="{html.escape(content)}">\n<summary>{summary}</summary>\n{content}\n</details>',
+                    content=content
                 ),
             )
         )
@@ -127,7 +128,7 @@ class Pipe:
             description="HTTP Proxy URL for OpenAI API requests",
         )
         STRUCTURE_TOOL_CALL: bool = Field(
-            default=False,
+            default=True,
             description="Whether to use strict JSON schema for tool calls",
         )
 
@@ -139,10 +140,22 @@ class Pipe:
         def _usage_to_str(self, usage: Usage) -> str:
             message = f"Usage: {usage.requests} requests, {usage.input_tokens} input tokens, {usage.output_tokens} output tokens, {usage.total_tokens} total tokens"
             return message
+        
+        async def on_agent_start(self, context: RunContextWrapper, agent: Agent) -> None:
+            self.event_counter += 1
+            await self.event_emitter.status(f"{agent.name} is Processing...", done=False)
 
         async def on_agent_end(self, context: RunContextWrapper, agent: Agent, output: Any) -> None:
             self.event_counter += 1
             await self.event_emitter.status(f"{agent.name} Process Complete!",done=True)
+        
+        async def on_tool_start(self, context: RunContextWrapper[TContext], agent: Agent[TContext], tool: Tool) -> None:
+            self.event_counter += 1
+            await self.event_emitter.status(f"{agent.name} is Calling Tool {tool.name}...")
+
+        async def on_tool_end(self, context: RunContextWrapper[TContext], agent: Agent[TContext], tool: Tool, result: str) -> None:
+            self.event_counter += 1
+            await self.event_emitter.status(f"{agent.name} Call Tool {tool.name} completed ✔")
 
     def __init__(self):
         self.valves = self.Valves()
@@ -241,6 +254,7 @@ class Pipe:
             model=self.valves.MAIN_MODEL,
             instructions=main_agent_instructions,
             handoffs=[general_agent,reasoning_agent],
+            tools=tools,
         )
 
         result = Runner.run_streamed(
@@ -249,8 +263,7 @@ class Pipe:
             hooks=ev_hooks,
             context=tool_infos
         )
-        await ev.status("Processing...", done=False)
-
+        await ev.status("Processing...",done=False)
         try:
             async for event in result.stream_events():
                 # We'll ignore the raw responses event deltas
@@ -259,27 +272,24 @@ class Pipe:
 
                 # When the agent updates, print that
                 elif event.type == "agent_updated_stream_event":
-                    await ev.status(f"{event.new_agent.name} is Processing...", done=False)
+                    # await ev.status(f"{event.new_agent.name} is Processing...", done=False)
                     continue
                 
                 # When items are generated, print them
                 elif event.type == "run_item_stream_event":
                     if event.item.type == "tool_call_item":
-                        logging.info(f"Tool call: {event.item.raw_item.model_dump()}")
-                        await ev.notification(f"Tool call: {str(event.item.raw_item)}")
+                        logging.info(f"Tool Call: {event.item.raw_item.name}") # type: ignore
                     elif event.item.type == "tool_call_output_item":
-                        # await ev.status(f"Tool call output: {event.item.raw_item}", done=False)
                         pass
                     elif event.item.type == "message_output_item":
-                        # await ev.notification(ItemHelpers.text_message_output(event.item))
                         pass
                     else:
                         pass  # Ignore other event types
                     continue
+                    
         except Exception as e:
             logging.exception(f"Error during streaming: {e}")
             yield e
-            return
 
     def transform_message_content(self, messages:list):
         """
