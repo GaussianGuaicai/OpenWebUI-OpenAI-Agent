@@ -33,6 +33,7 @@ from openai.types import Reasoning
 from agents import ItemHelpers, MessageOutputItem, ModelSettings, RunItem, RunItemStreamEvent, TContext, Tool, ToolCallItem, ToolCallOutputItem, set_default_openai_client, function_tool
 from agents import Agent, Runner, RunHooks, RunContextWrapper, Usage, FunctionTool, RunContextWrapper
 from agents.extensions import handoff_prompt
+from agents.run import DEFAULT_MAX_TURNS
 
 HTML_UI_PROCESSING = "<div style=display:flex><span>{content}</span><svg width=20 height=20><circle cx=10 cy=10 r=7 fill=none stroke=#0001 stroke-width=3 /><circle cx=10 cy=10 r=7 fill=none stroke=#3498db stroke-width=3 stroke-dasharray=11><animateTransform attributeName=transform type=rotate from=0,10,10 to=360,10,10 dur=1s repeatCount=indefinite /></circle></svg></div>"
 
@@ -131,6 +132,11 @@ class Pipe:
             default=True,
             description="Whether to use strict JSON schema for tool calls",
         )
+        MAX_TURNS: int = Field(
+            default=DEFAULT_MAX_TURNS,
+            description="The maximum number of turns to run the agent for",
+        )
+
 
     class EventHooks(RunHooks):
         def __init__(self, event_emitter:EventEmitter):
@@ -259,7 +265,7 @@ class Pipe:
 
         result = Runner.run_streamed(
             main_agent, body["messages"],
-            max_turns=2,
+            max_turns=self.valves.MAX_TURNS,
             hooks=ev_hooks,
             context=tool_infos
         )
@@ -279,9 +285,20 @@ class Pipe:
                 elif event.type == "run_item_stream_event":
                     if event.item.type == "tool_call_item":
                         logging.info(f"Tool Call: {event.item.raw_item.name}") # type: ignore
+                        if event.item.raw_item.type == "function_call":
+                            # This is a function call item
+                            yield f"**Calling Tool {event.item.raw_item.name}**\n"
+                        else:
+                            # This is a built-in tool call item
+                            yield f"**Calling Tool {event.item.raw_item.type}**\n"
                     elif event.item.type == "tool_call_output_item":
-                        pass
+                        if event.item.raw_item["type"] == "function_call_output":
+                            # This is a function call output item
+                            pass
                     elif event.item.type == "message_output_item":
+                        pass
+                    elif event.item.type == "reasoning_item":
+                        yield f"**Reasoning...**\n"
                         pass
                     else:
                         pass  # Ignore other event types
