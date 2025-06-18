@@ -120,9 +120,9 @@ class Pipe:
         OPENAI_BASE_URL: str = Field(
             default="https://api.openai.com/v1", description="OpenAI API base URL"
         )
-        MAIN_MODEL: str = Field(
+        TRIAGE_MODEL: str = Field(
             default="gpt-4.1-nano",
-            description="Main Agent Model ID",
+            description="Triage Agent Model ID",
         )
         HTTP_PROXY: Optional[str] = Field(
             default=None,
@@ -231,7 +231,7 @@ class Pipe:
                 
         tool_infos = Tools(tools=tool_maps)
         
-        general_agent_instructions = "You answer general questions and perform basic coding tasks."
+        general_agent_instructions = handoff_prompt.prompt_with_handoff_instructions("You answer general questions and perform basic coding tasks.")
         general_agent = Agent(
             "General Agent",
             model="gpt-4.1-mini",
@@ -240,7 +240,7 @@ class Pipe:
             tools=tools
         )
 
-        reasoning_agent_instructions = "You perform complex reasoning tasks and provide detailed explanations, also perform complex coding tasks."
+        reasoning_agent_instructions = handoff_prompt.prompt_with_handoff_instructions("You perform complex reasoning tasks and provide detailed explanations, also perform complex coding tasks.")
         reasoning_agent = Agent(
             "Reasoning Agent",
             model="o4-mini",
@@ -252,19 +252,19 @@ class Pipe:
             tools=tools
         )
 
-        main_agent_name = "Main Agent"
-        main_agent_instructions = "You determine which agent to use based on the user's question, and you should always handoff to the appropriate agent for processing."
-        main_agent_instructions = handoff_prompt.prompt_with_handoff_instructions(main_agent_instructions)
-        main_agent = Agent(
-            main_agent_name,
-            model=self.valves.MAIN_MODEL,
-            instructions=main_agent_instructions,
+        triage_agent_name = "Triage agent"
+        triage_agent_instructions = "You determine which agent to use based on the user's question, and you should always handoff to the appropriate agent for processing."
+        triage_agent_instructions = handoff_prompt.prompt_with_handoff_instructions(triage_agent_instructions)
+        triage_agent = Agent(
+            triage_agent_name,
+            model=self.valves.TRIAGE_MODEL,
+            instructions=triage_agent_instructions,
             handoffs=[general_agent,reasoning_agent],
             tools=tools,
         )
 
         result = Runner.run_streamed(
-            main_agent, body["messages"],
+            triage_agent, body["messages"],
             max_turns=self.valves.MAX_TURNS,
             hooks=ev_hooks,
             context=tool_infos
@@ -298,7 +298,7 @@ class Pipe:
                     elif event.item.type == "message_output_item":
                         pass
                     elif event.item.type == "reasoning_item":
-                        yield f"**Reasoning...**\n"
+                        yield f"\n**Reasoning Completed!**\n"
                         pass
                     else:
                         pass  # Ignore other event types
