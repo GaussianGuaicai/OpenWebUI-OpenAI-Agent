@@ -30,7 +30,7 @@ import json
 from openai import AsyncOpenAI
 from openai.types.responses import ResponseTextDeltaEvent
 from openai.types import Reasoning
-from agents import ItemHelpers, MessageOutputItem, ModelSettings, RunItem, RunItemStreamEvent, TContext, Tool, ToolCallItem, ToolCallOutputItem, set_default_openai_client, function_tool
+from agents import AgentHooks, ItemHelpers, MessageOutputItem, ModelSettings, RunItem, RunItemStreamEvent, RunResultStreaming, TContext, Tool, ToolCallItem, ToolCallOutputItem, set_default_openai_client, function_tool
 from agents import Agent, Runner, RunHooks, RunContextWrapper, Usage, FunctionTool, RunContextWrapper
 from agents.extensions import handoff_prompt
 from agents.run import DEFAULT_MAX_TURNS
@@ -157,10 +157,12 @@ class Pipe:
         
         async def on_tool_start(self, context: RunContextWrapper[TContext], agent: Agent[TContext], tool: Tool) -> None:
             self.event_counter += 1
+            logging.info(f"{agent.name} is calling tool {tool.name}...")
             await self.event_emitter.status(f"{agent.name} is Calling Tool {tool.name}...")
 
         async def on_tool_end(self, context: RunContextWrapper[TContext], agent: Agent[TContext], tool: Tool, result: str) -> None:
             self.event_counter += 1
+            logging.info(f"{agent.name} called tool {tool.name} with result: {result}")
             await self.event_emitter.status(f"{agent.name} Call Tool {tool.name} completed ✔")
 
     def __init__(self):
@@ -260,7 +262,7 @@ class Pipe:
             model=self.valves.TRIAGE_MODEL,
             instructions=triage_agent_instructions,
             handoffs=[general_agent,reasoning_agent],
-            tools=tools,
+            tools=tools
         )
 
         result = Runner.run_streamed(
@@ -269,7 +271,12 @@ class Pipe:
             hooks=ev_hooks,
             context=tool_infos
         )
+
         await ev.status("Processing...",done=False)
+
+        return self.run(result)
+
+    async def run(self,result:RunResultStreaming):
         try:
             async for event in result.stream_events():
                 # We'll ignore the raw responses event deltas
