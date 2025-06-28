@@ -1,26 +1,52 @@
 # OpenWebUI-OpenAI-Agent
 
-## Project Overview
+## Overview
 
-OpenWebUI-OpenAI-Agent is a multi-agent pipeline implementation based on the [OpenAI Agent SDK](https://openai.github.io/openai-agents-python/). It is designed to provide flexible multi-agent conversation and tool-calling capabilities for OpenWebUI. The project supports multiple models and agent collaboration, suitable for general Q&A, complex reasoning, and code generation scenarios.
+**OpenWebUI-OpenAI-Agent** is a multi-agent pipeline implementation based on the [OpenAI Agent SDK](https://openai.github.io/openai-agents-python/). It enables flexible multi-agent conversations, tool-calling, and advanced reasoning for [OpenWebUI](https://github.com/open-webui/open-webui). The project supports multiple models, agent collaboration, and both standard OpenAI SDK and MCP (Multi-Component Pipeline) backends.
 
 ## Features
-- **Multi-agent collaboration**: Built-in General Agent, Reasoning Agent, and Main Agent for automatic task routing.
-- **Tool calling**: Supports custom tool (FunctionTool) registration and asynchronous execution.
-- **Streaming output**: Real-time event streaming for better user experience.
+
+- **Multi-agent collaboration**: Built-in General Agent, Reasoning Agent, and Triage Agent for automatic task routing.
+- **Tool calling**: Register and execute custom tools (FunctionTool) asynchronously.
+- **Streaming output**: Real-time event streaming for responsive user experience.
 - **Extensible**: Easily integrate custom models, tools, and pipeline logic.
+- **MCP support**: Optional integration with MCP servers for advanced tool execution and environment isolation.
 
 ## Main Files
-- `openai_agent_sdk_pipe.py`: Main pipeline implementation, including agent definitions, tool registration, and event stream handling.
+
+- `openai_agent_sdk_pipe.py`: Main pipeline using the OpenAI Agent SDK, including agent definitions, tool registration, and event stream handling.
+- `openai_agent_sdk_mcp_pipe.py`: Pipeline with MCP server support for advanced tool execution and environment management.
 
 ## Agents
+
 - **General Agent**: Handles general questions and basic coding tasks.
 - **Reasoning Agent**: Handles complex reasoning and advanced coding tasks.
-- **Main Agent**: Automatically routes user requests to the appropriate agent.
+- **Triage Agent**: Automatically routes user requests to the appropriate agent.
+
+## Usage
+
+1. **Configure API Keys and Models**  
+   Set your OpenAI API key and model preferences in the pipeline valves or environment variables.
+
+2. **Register Tools**  
+   Define and register custom tools (functions) to extend agent capabilities.
+
+3. **Run the Pipeline**  
+   Integrate the pipeline with OpenWebUI or call it directly in your Python code.
+
+4. **(Optional) MCP Configuration**  
+   For advanced tool execution, configure MCP servers in `openai_agent_sdk_mcp_pipe.py` and provide a valid MCP config file.
+
+## Configuration
+
+- Edit the `Valves` class in each pipeline file to set API keys, model IDs, proxy settings, MCP options, and other parameters.
+- For MCP, provide a JSON config file with your MCP server definitions.
 
 ## License
+
 MIT License.
 
 ---
 
-This project is built with the [OpenAI Agent SDK](https://openai.github.io/openai-agents-python/). For SDK usage and advanced features, please refer to the official documentation.
+This project is built with the [OpenAI Agent SDK](https://openai.github.io/openai-agents-python/).  
+For SDK usage and advanced features, please refer to the official documentation.
