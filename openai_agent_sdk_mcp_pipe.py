@@ -33,7 +33,7 @@ from agents import AgentHooks, ItemHelpers, MessageOutputItem, ModelSettings, Ru
 from agents import Agent, Runner, RunHooks, RunContextWrapper, Usage, FunctionTool, RunContextWrapper
 from agents.extensions import handoff_prompt
 from agents.run import DEFAULT_MAX_TURNS
-from agents.mcp import MCPServerStdio, MCPServerStdioParams
+from agents.mcp import MCPServer, MCPServerStdio, MCPServerStdioParams
 from agents.mcp.util import MCPUtil
 from agents import set_tracing_disabled
 
@@ -112,7 +112,7 @@ class EventEmitter:
             )
         )
 
-def create_stdio_server(server_name:str, server_config:dict, cwd=None, timeout=30):
+async def create_stdio_server(server_name:str, server_config:dict, cwd=None, timeout=30):
     params_kwargs = dict(server_config)
     if cwd is not None:
         params_kwargs["cwd"] = cwd
@@ -122,6 +122,12 @@ def create_stdio_server(server_name:str, server_config:dict, cwd=None, timeout=3
         name=server_name,
         client_session_timeout_seconds=timeout,
     )
+
+    try:
+        await server.connect()
+    except Exception as e:
+        logging.error(f"Error connecting to MCP server {server_name}: {e}")
+        raise e
     return server
 
 class Pipe:
@@ -195,7 +201,7 @@ class Pipe:
         self.valves = self.Valves()
         self.type = "manifold"
         self.name = "openai-agent-sdk/"
-        self.mcp_servers = []
+        self.mcp_servers:list[MCPServer] = []
         self.mcp_configs = {}
         
         logging.info(f"OpenAI Agent SDK Pipe initialized with valves: {self.valves.model_dump()}")
@@ -240,16 +246,16 @@ class Pipe:
 
             print(f"MCP Configs: {self.mcp_configs}")
 
-            self.mcp_servers = [
+            create_server_tasks = [
                 create_stdio_server(server_name, server_config, cwd=self.valves.MCP_CWD, timeout=self.valves.MCP_CONNECT_TIMEOUT)
                 for server_name, server_config in self.mcp_configs.items()
             ]
 
-            try:
-                await asyncio.gather(server.connect() for server in self.mcp_servers)
-            except Exception as e:
-                logging.error(f"Error creating MCP servers: {e}")
-                raise e
+            for result in await asyncio.gather(*create_server_tasks,return_exceptions=True):
+                if isinstance(result, MCPServer):
+                    self.mcp_servers.append(result)
+                else: logging.error(f"Failed to create MCP server: {result}")
+            
 
         logging.info(f"Number of MCP Servers: {len(self.mcp_servers)}")
 
@@ -258,7 +264,7 @@ class Pipe:
         general_agent_instructions = handoff_prompt.prompt_with_handoff_instructions("You answer general questions and perform basic coding tasks.")
         general_agent = Agent(
             "General Agent",
-            model="gpt-4.1-mini",
+            model="gpt-4.1",
             instructions=general_agent_instructions,
             handoff_description="Use this agent for general questions and basic coding tasks.",
             mcp_servers=self.mcp_servers, # type: ignore
@@ -324,10 +330,10 @@ class Pipe:
                         logging.info(f"Tool Call: {event.item.raw_item.name}") # type: ignore
                         if event.item.raw_item.type == "function_call":
                             # This is a function call item
-                            yield f"**Call Tool {event.item.raw_item.name}**\n"
+                            yield f"\n**Called Tool {event.item.raw_item.name}**\n"
                         else:
                             # This is a built-in tool call item
-                            yield f"**Call Tool {event.item.raw_item.type}**\n"
+                            yield f"\n**Called Tool {event.item.raw_item.type}**\n"
                     elif event.item.type == "tool_call_output_item":
                         if event.item.raw_item["type"] == "function_call_output":
                             # This is a function call output item
