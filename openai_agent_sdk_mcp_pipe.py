@@ -35,9 +35,7 @@ from agents.extensions import handoff_prompt
 from agents.run import DEFAULT_MAX_TURNS
 from agents.mcp import MCPServer, MCPServerStdio, MCPServerStdioParams
 from agents.mcp.util import MCPUtil
-from agents import set_tracing_disabled
-
-set_tracing_disabled(True)
+from agents import tracing, set_tracing_disabled
 
 class EventEmitterMessageData(TypedDict):
     content: str
@@ -152,6 +150,10 @@ class Pipe:
             default=DEFAULT_MAX_TURNS,
             description="The maximum number of turns to run the agent for",
         )
+        ENABLE_TRACING: bool = Field(
+            default=False,
+            description="Whether to enable tracing for the agent",
+        )
         MCP_ENV_PATH: Optional[str] = Field(
             default=None,
             description="Additional environment variable $PATH to include",
@@ -217,6 +219,11 @@ class Pipe:
     ):
         # This is where you can add your custom pipelines like RAG.
         print(f"pipe:{__name__}")
+
+        # Tracing setup
+        set_tracing_disabled(not self.valves.ENABLE_TRACING)
+        tracing.set_tracing_export_api_key(self.valves.OPENAI_API_KEY)
+        tracing.processors.default_exporter().endpoint = self.valves.OPENAI_BASE_URL + "/traces/ingest"
 
         ev = EventEmitter(__event_emitter__)
         ev_hooks = self.EventHooks(ev)
@@ -330,10 +337,10 @@ class Pipe:
                         logging.info(f"Tool Call: {event.item.raw_item.name}") # type: ignore
                         if event.item.raw_item.type == "function_call":
                             # This is a function call item
-                            yield f"\n**Called Tool {event.item.raw_item.name}**\n"
+                            yield f"\n***Called Tool {event.item.raw_item.name}***\n"
                         else:
                             # This is a built-in tool call item
-                            yield f"\n**Called Tool {event.item.raw_item.type}**\n"
+                            yield f"\n***Called Tool {event.item.raw_item.type}***\n"
                     elif event.item.type == "tool_call_output_item":
                         if event.item.raw_item["type"] == "function_call_output":
                             # This is a function call output item
@@ -341,7 +348,7 @@ class Pipe:
                     elif event.item.type == "message_output_item":
                         pass
                     elif event.item.type == "reasoning_item":
-                        yield f"\n**Reasoning Completed!**\n"
+                        yield f"\n***Reasoning Completed!***\n"
                         pass
                     else:
                         pass  # Ignore other event types
