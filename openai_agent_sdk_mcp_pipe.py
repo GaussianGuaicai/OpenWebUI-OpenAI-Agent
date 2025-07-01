@@ -337,10 +337,10 @@ class Pipe:
                         logging.info(f"Tool Call: {event.item.raw_item.name}") # type: ignore
                         if event.item.raw_item.type == "function_call":
                             # This is a function call item
-                            yield f"\n***Called Tool {event.item.raw_item.name}***\n"
+                            yield f"\n***Called Tool {event.item.raw_item.name} ✔***\n"
                         else:
                             # This is a built-in tool call item
-                            yield f"\n***Called Tool {event.item.raw_item.type}***\n"
+                            yield f"\n***Called Tool {event.item.raw_item.type} ✔***\n"
                     elif event.item.type == "tool_call_output_item":
                         if event.item.raw_item["type"] == "function_call_output":
                             # This is a function call output item
