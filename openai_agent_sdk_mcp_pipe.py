@@ -36,6 +36,9 @@ from agents.run import DEFAULT_MAX_TURNS
 from agents.mcp import MCPServer, MCPServerStdio, MCPServerStdioParams
 from agents.mcp.util import MCPUtil
 from agents import tracing, set_tracing_disabled
+from datetime import datetime
+
+current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 class EventEmitterMessageData(TypedDict):
     content: str
@@ -268,7 +271,11 @@ class Pipe:
 
         body["messages"] = self.transform_message_content(body["messages"])
         
-        general_agent_instructions = handoff_prompt.prompt_with_handoff_instructions("You answer general questions and perform basic coding tasks.")
+        general_agent_instructions = ''.join((
+            "You answer general questions and perform basic coding tasks.\n",
+            "When handling any user query about current or time-sensitive events, always invoke the appropriate external tools (e.g., web search, page reader, fact-checker) to retrieve, verify, and cite the latest information before generating your response.\n",
+            f"The current date is {current_date}.\n",
+        ))
         general_agent = Agent(
             "General Agent",
             model="gpt-4.1",
@@ -277,7 +284,11 @@ class Pipe:
             mcp_servers=self.mcp_servers, # type: ignore
         )
 
-        reasoning_agent_instructions = handoff_prompt.prompt_with_handoff_instructions("You perform complex reasoning tasks and provide detailed explanations, also perform complex coding tasks.")
+        reasoning_agent_instructions = ''.join((
+            "You perform complex reasoning tasks and provide detailed explanations, also perform complex coding tasks.\n",
+            "When handling any user query about current or time-sensitive events, always invoke the appropriate external tools (e.g., web search, page reader, fact-checker) to retrieve, verify, and cite the latest information before generating your response.\n",
+            f"The current date is {current_date}.\n",
+        ))
         reasoning_agent = Agent(
             "Reasoning Agent",
             model="o4-mini",
@@ -290,14 +301,20 @@ class Pipe:
         )
 
         triage_agent_name = "Triage agent"
-        triage_agent_instructions = "You determine which agent to use based on the user's question, and you should always handoff to the appropriate agent for processing."
-        triage_agent_instructions = handoff_prompt.prompt_with_handoff_instructions(triage_agent_instructions)
+        triage_agent_instructions = ''.join((
+            f"The current date is {current_date}.\n",
+            "You determine which agent to use based on the user's question.\n",
+            "• If the question is general or basic coding, use the General Agent.\n",
+            "• If the question requires complex reasoning or advanced coding, use the Reasoning Agent.\n",
+            "Return exactly ONE function-call."
+        ))
+        # triage_agent_instructions = handoff_prompt.prompt_with_handoff_instructions(triage_agent_instructions)
         triage_agent = Agent(
             triage_agent_name,
             model=self.valves.TRIAGE_MODEL,
             instructions=triage_agent_instructions,
             handoffs=[general_agent,reasoning_agent],
-            mcp_servers=self.mcp_servers, # type: ignore
+            # mcp_servers=self.mcp_servers, # type: ignore
         )
 
         result = Runner.run_streamed(
