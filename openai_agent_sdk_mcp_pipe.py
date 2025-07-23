@@ -30,13 +30,15 @@ from openai import AsyncOpenAI
 from openai.types.responses import ResponseTextDeltaEvent
 from openai.types import Reasoning
 from agents import AgentHooks, ItemHelpers, MessageOutputItem, ModelSettings, RunItem, RunItemStreamEvent, RunResultStreaming, TContext, Tool, ToolCallItem, ToolCallOutputItem, set_default_openai_client, function_tool
-from agents import Agent, Runner, RunHooks, RunContextWrapper, Usage, FunctionTool, RunContextWrapper
+from agents import Agent, Runner, RunHooks, RunContextWrapper, Usage, FunctionTool, RunContextWrapper, WebSearchTool
 from agents.extensions import handoff_prompt
 from agents.run import DEFAULT_MAX_TURNS
 from agents.mcp import MCPServer, MCPServerStdio, MCPServerStdioParams
 from agents.mcp.util import MCPUtil
 from agents import tracing, set_tracing_disabled
 from datetime import datetime
+
+from open_webui.utils.middleware import chat_completion_files_handler
 
 current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -271,34 +273,11 @@ class Pipe:
 
         body["messages"] = self.transform_message_content(body["messages"])
         
-        general_agent_instructions = ''.join((
-            "You answer general questions and perform basic coding tasks.\n",
-            "When handling any user query about current or time-sensitive events, always invoke the appropriate external tools (e.g., web search, page reader, fact-checker) to retrieve, verify, and cite the latest information before generating your response.\n",
-            f"The current date is {current_date}.\n",
-        ))
-        general_agent = Agent(
-            "General Agent",
-            model="gpt-4.1",
-            instructions=general_agent_instructions,
-            handoff_description="Use this agent for general questions and basic coding tasks.",
-            mcp_servers=self.mcp_servers, # type: ignore
-        )
+        general_agent = self.create_general_agent()
 
-        reasoning_agent_instructions = ''.join((
-            "You perform complex reasoning tasks and provide detailed explanations, also perform complex coding tasks.\n",
-            "When handling any user query about current or time-sensitive events, always invoke the appropriate external tools (e.g., web search, page reader, fact-checker) to retrieve, verify, and cite the latest information before generating your response.\n",
-            f"The current date is {current_date}.\n",
-        ))
-        reasoning_agent = Agent(
-            "Reasoning Agent",
-            model="o4-mini",
-            instructions=reasoning_agent_instructions,
-            handoff_description="Use this agent for complex reasoning tasks that require detailed explanations or advanced coding.",
-            model_settings=ModelSettings(
-                reasoning=Reasoning(effort="medium"),
-            ),
-            mcp_servers=self.mcp_servers, # type: ignore
-        )
+        reasoning_agent = self.create_reasoning_agent()
+
+        # research_agent = self.create_research_agent()
 
         triage_agent_name = "Triage agent"
         triage_agent_instructions = ''.join((
@@ -306,6 +285,7 @@ class Pipe:
             "You determine which agent to use based on the user's question.\n",
             "• If the question is general or basic coding, use the General Agent.\n",
             "• If the question requires complex reasoning or advanced coding, use the Reasoning Agent.\n",
+            # "• If the question requires research or detailed explanations, use the Research Agent.\n",
             "Return exactly ONE function-call."
         ))
         # triage_agent_instructions = handoff_prompt.prompt_with_handoff_instructions(triage_agent_instructions)
@@ -326,6 +306,60 @@ class Pipe:
         await ev.status("Processing...",done=False)
 
         return self.run(result)
+
+    def create_reasoning_agent(self):
+        reasoning_agent_instructions = ''.join((
+            "You perform complex reasoning tasks and provide detailed explanations, also perform complex coding tasks.\n",
+            "When handling any user query about current or time-sensitive events, always invoke the appropriate external tools (e.g., web search, page reader, fact-checker) to retrieve, verify, and cite the latest information before generating your response.\n",
+            f"The current date is {current_date}.\n",
+        ))
+        reasoning_agent = Agent(
+            "Reasoning Agent",
+            model="o4-mini",
+            instructions=reasoning_agent_instructions,
+            handoff_description="Use this agent for complex reasoning tasks that require detailed explanations or advanced coding.",
+            model_settings=ModelSettings(
+                reasoning=Reasoning(effort="medium"),
+            ),
+            mcp_servers=self.mcp_servers, # type: ignore
+        )
+        
+        return reasoning_agent
+
+    def create_general_agent(self):
+        general_agent_instructions = ''.join((
+            "You answer general questions and perform basic coding tasks.\n",
+            "When handling any user query about current or time-sensitive events, always invoke the appropriate external tools (e.g., web search, page reader, fact-checker) to retrieve, verify, and cite the latest information before generating your response.\n",
+            f"The current date is {current_date}.\n",
+        ))
+        general_agent = Agent(
+            "General Agent",
+            model="gpt-4.1-mini",
+            instructions=general_agent_instructions,
+            handoff_description="Use this agent for general questions and basic coding tasks.",
+            mcp_servers=self.mcp_servers, # type: ignore
+        )
+        
+        return general_agent
+    
+    def create_research_agent(self):
+        research_agent_instructions = ''.join((
+            "You perform deep empirical research based on the user's question.\n",
+            f"The current date is {current_date}.\n",
+        ))
+        research_agent = Agent(
+            "Research Agent",
+            model="o4-mini-deep-research",
+            model_settings=ModelSettings(
+                max_tokens=1000,
+                extra_body={'max_tool_calls':5}
+            ),
+            instructions=research_agent_instructions,
+            tools=[WebSearchTool()],
+            # mcp_servers=self.mcp_servers, # type: ignore
+        )
+        
+        return research_agent
 
     def append_env_path(self):
         if self.valves.MCP_ENV_PATH:
