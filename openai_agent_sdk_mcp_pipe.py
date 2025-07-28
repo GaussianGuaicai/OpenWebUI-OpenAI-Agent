@@ -386,12 +386,21 @@ class Pipe:
                 elif event.type == "run_item_stream_event":
                     if event.item.type == "tool_call_item":
                         logging.info(f"Tool Call: {event.item.raw_item.name}") # type: ignore
-                        if event.item.raw_item.type == "function_call":
-                            # This is a function call item
-                            yield f"\n***Called Tool {event.item.raw_item.name} ✔***\n"
+                        if event.item.raw_item.type == "mcp_call":
+                            # This is a MCP call item
+                            if event.item.raw_item.error:
+                                yield f"\n***Called MCP Tool {event.item.raw_item.name} ❌: {event.item.raw_item.error}***\n"
+                            else:
+                                yield f"\n***Called MCP Tool {event.item.raw_item.name} ✔***\n"
                         else:
-                            # This is a built-in tool call item
-                            yield f"\n***Called Tool {event.item.raw_item.type} ✔***\n"
+                            name = event.item.raw_item.name if event.item.raw_item.type == "function_call" else event.item.raw_item.type
+                            match event.item.raw_item.status:
+                                case "failed":
+                                    yield f"\n***Called Tool {name} ❌***"
+                                case "incomplete":
+                                    yield f"\n***Called Tool {name} ⏳***"
+                                case "completed":
+                                    yield f"\n***Called Tool {name} ✔***\n"
                     elif event.item.type == "tool_call_output_item":
                         if event.item.raw_item["type"] == "function_call_output":
                             # This is a function call output item
@@ -399,7 +408,6 @@ class Pipe:
                     elif event.item.type == "message_output_item":
                         pass
                     elif event.item.type == "reasoning_item":
-                        yield f"\n***Reasoning Completed!***\n"
                         pass
                     else:
                         pass  # Ignore other event types
