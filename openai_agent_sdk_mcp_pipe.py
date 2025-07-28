@@ -143,6 +143,14 @@ class Pipe:
             default="gpt-4.1-nano",
             description="Triage Agent Model ID",
         )
+        GENERAL_MODEL: str = Field(
+            default="gpt-4.1",
+            description="General Agent Model ID",
+        )
+        REASONING_MODEL: str = Field(
+            default="o4-mini",
+            description="Reasoning Agent Model ID",
+        )
         HTTP_PROXY: Optional[str] = Field(
             default=None,
             description="HTTP Proxy URL for OpenAI API requests",
@@ -286,6 +294,7 @@ class Pipe:
             "• If the question is general or basic coding, use the General Agent.\n",
             "• If the question requires complex reasoning or advanced coding, use the Reasoning Agent.\n",
             # "• If the question requires research or detailed explanations, use the Research Agent.\n",
+            "• If the question is very simple and require no function calls, you can answer it directly.\n"
             "Return exactly ONE function-call."
         ))
         # triage_agent_instructions = handoff_prompt.prompt_with_handoff_instructions(triage_agent_instructions)
@@ -308,14 +317,14 @@ class Pipe:
         return self.run(result)
 
     def create_reasoning_agent(self):
-        reasoning_agent_instructions = ''.join((
-            "You perform complex reasoning tasks and provide detailed explanations, also perform complex coding tasks.\n",
-            "When handling any user query about current or time-sensitive events, always invoke the appropriate external tools (e.g., web search, page reader, fact-checker) to retrieve, verify, and cite the latest information before generating your response.\n",
-            f"The current date is {current_date}.\n",
-        ))
+        reasoning_agent_instructions = f"""You perform complex reasoning tasks and provide detailed explanations, also perform complex coding tasks.
+When handling any user query about current or time-sensitive events, always invoke the appropriate external tools (e.g., web search, page reader, fact-checker) to retrieve, verify, and cite the latest information before generating your response.
+Note:
+    - The current date is {current_date}.
+    - You should reasoning before calling any tool."""
         reasoning_agent = Agent(
             "Reasoning Agent",
-            model="o4-mini",
+            model=self.valves.REASONING_MODEL,
             instructions=reasoning_agent_instructions,
             handoff_description="Use this agent for complex reasoning tasks that require detailed explanations or advanced coding.",
             model_settings=ModelSettings(
@@ -327,14 +336,14 @@ class Pipe:
         return reasoning_agent
 
     def create_general_agent(self):
-        general_agent_instructions = ''.join((
-            "You answer general questions and perform basic coding tasks.\n",
-            "When handling any user query about current or time-sensitive events, always invoke the appropriate external tools (e.g., web search, page reader, fact-checker) to retrieve, verify, and cite the latest information before generating your response.\n",
-            f"The current date is {current_date}.\n",
-        ))
+        general_agent_instructions = f"""You answer general questions and perform basic coding tasks.
+When handling any user query about current or time-sensitive events, always invoke the appropriate external tools (e.g., web search, page reader, fact-checker) to retrieve, verify, and cite the latest information before generating your response.
+Note:
+    - The current date is {current_date}.
+    - You should reasoning before calling any tool."""
         general_agent = Agent(
             "General Agent",
-            model="gpt-4.1-mini",
+            model=self.valves.GENERAL_MODEL,
             instructions=general_agent_instructions,
             handoff_description="Use this agent for general questions and basic coding tasks.",
             mcp_servers=self.mcp_servers, # type: ignore
