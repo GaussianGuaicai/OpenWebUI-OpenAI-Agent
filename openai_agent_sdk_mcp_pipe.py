@@ -33,12 +33,14 @@ from agents import AgentHooks, ItemHelpers, MessageOutputItem, ModelSettings, Ru
 from agents import Agent, Runner, RunHooks, RunContextWrapper, Usage, FunctionTool, RunContextWrapper, WebSearchTool
 from agents.extensions import handoff_prompt
 from agents.run import DEFAULT_MAX_TURNS
-from agents.mcp import MCPServer, MCPServerStdio, MCPServerStdioParams
+from agents.mcp import MCPServer, MCPServerStdio, MCPServerStdioParams, ToolFilterContext, ToolFilter
 from agents.mcp.util import MCPUtil
 from agents import tracing, set_tracing_disabled
 from datetime import datetime
 
 from open_webui.utils.middleware import chat_completion_files_handler
+
+TRIGAE_AGENT_NAME = "Triage agent"
 
 current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -115,7 +117,7 @@ class EventEmitter:
             )
         )
 
-async def create_stdio_server(server_name:str, server_config:dict, cwd=None, timeout=30):
+async def create_stdio_server(server_name:str, server_config:dict, cwd=None, timeout=30, tool_filter:Optional[ToolFilter] = None):
     params_kwargs = dict(server_config)
     if cwd is not None:
         params_kwargs["cwd"] = cwd
@@ -124,6 +126,7 @@ async def create_stdio_server(server_name:str, server_config:dict, cwd=None, tim
         params=MCPServerStdioParams(**params_kwargs),
         name=server_name,
         client_session_timeout_seconds=timeout,
+        tool_filter=tool_filter,
     )
 
     try:
@@ -183,6 +186,14 @@ class Pipe:
             default=45,
             description="Timeout for MCP server client first connection in seconds",
         )
+        TRIAGE_ALLOW_SERVERS: Optional[str] = Field(
+            default=None,
+            description="List of MCP servers allowed for the Triage Agent, if None, all servers are allowed",
+        )
+        TRIAGE_ALLOW_TOOLS: Optional[str] = Field(
+            default=None,
+            description="List of tools allowed for the Triage Agent, if None, all tools are allowed",
+        )
 
 
     class EventHooks(RunHooks):
@@ -220,6 +231,19 @@ class Pipe:
         self.mcp_configs = {}
         
         logging.info(f"OpenAI Agent SDK Pipe initialized with valves: {self.valves.model_dump()}")
+
+    # Dynamic Tool Filter
+    def tool_filter(self,context: ToolFilterContext, tool):
+        """Filter tools based on valves information."""
+        allowed = True
+        if context.agent.name == TRIGAE_AGENT_NAME:
+            if isinstance(self.valves.TRIAGE_ALLOW_SERVERS, str):
+                allowed = allowed and (context.server_name in self.valves.TRIAGE_ALLOW_SERVERS.split(","))
+            
+            if isinstance(self.valves.TRIAGE_ALLOW_TOOLS, str):
+                allowed = allowed and (tool.name in self.valves.TRIAGE_ALLOW_TOOLS.split(","))
+                
+        return allowed
 
     async def pipe(
         self,
@@ -267,7 +291,7 @@ class Pipe:
             print(f"MCP Configs: {self.mcp_configs}")
 
             create_server_tasks = [
-                create_stdio_server(server_name, server_config, cwd=self.valves.MCP_CWD, timeout=self.valves.MCP_CONNECT_TIMEOUT)
+                create_stdio_server(server_name, server_config, cwd=self.valves.MCP_CWD, timeout=self.valves.MCP_CONNECT_TIMEOUT, tool_filter=self.tool_filter)
                 for server_name, server_config in self.mcp_configs.items()
             ]
 
