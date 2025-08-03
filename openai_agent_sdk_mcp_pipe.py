@@ -19,6 +19,7 @@ from typing import (
     Optional,
     TypedDict,
     Union,
+    Annotated,
 )
 import html
 import asyncio
@@ -30,15 +31,22 @@ from openai import AsyncOpenAI
 from openai.types.responses import ResponseTextDeltaEvent
 from openai.types import Reasoning
 from agents import AgentHooks, ItemHelpers, MessageOutputItem, ModelSettings, RunItem, RunItemStreamEvent, RunResultStreaming, TContext, Tool, ToolCallItem, ToolCallOutputItem, set_default_openai_client, function_tool
-from agents import Agent, Runner, RunHooks, RunContextWrapper, Usage, FunctionTool, RunContextWrapper, WebSearchTool
+from agents import Agent, Runner, RunHooks, RunContextWrapper, Usage, FunctionTool, RunContextWrapper, WebSearchTool, ImageGenerationTool
 from agents.extensions import handoff_prompt
 from agents.run import DEFAULT_MAX_TURNS
 from agents.mcp import MCPServer, MCPServerStdio, MCPServerStdioParams, ToolFilterContext, ToolFilter
 from agents.mcp.util import MCPUtil
 from agents import tracing, set_tracing_disabled
 from datetime import datetime
+import base64
 
 from open_webui.utils.middleware import chat_completion_files_handler
+from open_webui.routers.images import (
+    load_b64_image_data,
+    image_generations,
+    GenerateImageForm,
+    upload_image,
+)
 
 TRIGAE_AGENT_NAME = "Triage agent"
 
@@ -195,6 +203,15 @@ class Pipe:
             description="List of tools allowed for the Triage Agent, if None, all tools are allowed",
         )
 
+        ENABLE_IMAGE_GENERATION: bool = Field(
+            default=False,
+            description="Whether to enable image generation tool",
+        )
+        OPENAI_IMAGE_GEN_API_KEY: Optional[str] = Field(
+            default=None,
+            description="OpenAI API key for image generation",
+        )
+
 
     class EventHooks(RunHooks):
         def __init__(self, event_emitter:EventEmitter):
@@ -222,6 +239,11 @@ class Pipe:
             self.event_counter += 1
             logging.info(f"{agent.name} called tool {tool.name} with result: {result}")
             await self.event_emitter.status(f"{agent.name} Call Tool {tool.name} completed ✔")
+
+    class InputContext(BaseModel):
+        allow_servers: Annotated[Optional[list[str]], Field(description="List of allowed MCP servers for the agent, if None, all servers are allowed")] = None
+        allow_tools: Annotated[Optional[list[str]], Field(description="List of allowed tools for the agent, if None, all tools are allowed")] = None
+        blocked_tools: Annotated[list[str], Field(description="List of blocked tools for the agent")] = []
 
     def __init__(self):
         self.valves = self.Valves()
@@ -303,37 +325,35 @@ class Pipe:
 
         logging.info(f"Number of MCP Servers: {len(self.mcp_servers)}")
 
+        # Additional Tools
+        self.image_gen_tool = ImageGenerationTool(tool_config={"type": "image_generation","quality": "low","size":"1024x1024","background":"transparent"})
+
         body["messages"] = self.transform_message_content(body["messages"])
         
         general_agent = self.create_general_agent()
 
         reasoning_agent = self.create_reasoning_agent()
 
-        # research_agent = self.create_research_agent()
+        research_agent = self.create_research_agent()
 
-        triage_agent_name = "Triage agent"
-        triage_agent_instructions = ''.join((
-            f"The current date is {current_date}.\n",
-            "You determine which agent to use based on the user's question.\n",
-            "• If the question is general or basic coding, use the General Agent.\n",
-            "• If the question requires complex reasoning or advanced coding, use the Reasoning Agent.\n",
-            # "• If the question requires research or detailed explanations, use the Research Agent.\n",
-            "• If the question is very simple and require no function calls, you can answer it directly.\n"
-            "Return exactly ONE function-call."
-        ))
-        # triage_agent_instructions = handoff_prompt.prompt_with_handoff_instructions(triage_agent_instructions)
+        triage_agent_instructions = f"""You can answer simple questions but you SHOULD handoff to the appropriate agent in most of the time and following these rules:
+    • If the question is general or requires basic coding, use the General Agent.
+    • If the question requires complex reasoning or advanced coding, use the Reasoning Agent.
+    • If the question requires deep research or detailed explanations, use the Research Agent."""
         triage_agent = Agent(
-            triage_agent_name,
+            TRIGAE_AGENT_NAME,
             model=self.valves.TRIAGE_MODEL,
             instructions=triage_agent_instructions,
-            handoffs=[general_agent,reasoning_agent],
-            # mcp_servers=self.mcp_servers, # type: ignore
+            handoffs=[general_agent,reasoning_agent,research_agent],
+            model_settings=ModelSettings(parallel_tool_calls=False),
+            mcp_servers=self.mcp_servers, # type: ignore
         )
 
         result = Runner.run_streamed(
             triage_agent, body["messages"],
             max_turns=self.valves.MAX_TURNS,
-            hooks=ev_hooks
+            hooks=ev_hooks,
+            context=self.InputContext()
         )
 
         await ev.status("Processing...",done=False)
@@ -344,8 +364,7 @@ class Pipe:
         reasoning_agent_instructions = f"""You perform complex reasoning tasks and provide detailed explanations, also perform complex coding tasks.
 When handling any user query about current or time-sensitive events, always invoke the appropriate external tools (e.g., web search, page reader, fact-checker) to retrieve, verify, and cite the latest information before generating your response.
 Note:
-    - The current date is {current_date}.
-    - You should reasoning before calling any tool."""
+    - You should state your reason before calling any tool."""
         reasoning_agent = Agent(
             "Reasoning Agent",
             model=self.valves.REASONING_MODEL,
@@ -355,6 +374,7 @@ Note:
                 reasoning=Reasoning(effort="medium"),
             ),
             mcp_servers=self.mcp_servers, # type: ignore
+            # tools=[self.image_gen_tool],
         )
         
         return reasoning_agent
@@ -363,7 +383,6 @@ Note:
         general_agent_instructions = f"""You answer general questions and perform basic coding tasks.
 When handling any user query about current or time-sensitive events, always invoke the appropriate external tools (e.g., web search, page reader, fact-checker) to retrieve, verify, and cite the latest information before generating your response.
 Note:
-    - The current date is {current_date}.
     - You should reasoning before calling any tool."""
         general_agent = Agent(
             "General Agent",
@@ -371,25 +390,21 @@ Note:
             instructions=general_agent_instructions,
             handoff_description="Use this agent for general questions and basic coding tasks.",
             mcp_servers=self.mcp_servers, # type: ignore
+            # tools=[self.image_gen_tool]
         )
         
         return general_agent
     
     def create_research_agent(self):
-        research_agent_instructions = ''.join((
-            "You perform deep empirical research based on the user's question.\n",
-            f"The current date is {current_date}.\n",
-        ))
+        research_agent_instructions = f"""You perform deep empirical research based on the user's question.
+When handling any user query about current or time-sensitive events, always invoke the appropriate external tools (e.g., web search, page reader, fact-checker) to retrieve, verify, and cite the latest information before generating your response.
+Note:
+    - You should state your reason before calling any tool."""
         research_agent = Agent(
             "Research Agent",
-            model="o4-mini-deep-research",
-            model_settings=ModelSettings(
-                max_tokens=1000,
-                extra_body={'max_tool_calls':5}
-            ),
+            model="o4-mini",
             instructions=research_agent_instructions,
-            tools=[WebSearchTool()],
-            # mcp_servers=self.mcp_servers, # type: ignore
+            mcp_servers=self.mcp_servers, # type: ignore
         )
         
         return research_agent
@@ -425,6 +440,9 @@ Note:
                                 yield f"\n***Called MCP Tool {event.item.raw_item.name} ❌: {event.item.raw_item.error}***\n"
                             else:
                                 yield f"\n***Called MCP Tool {event.item.raw_item.name} ✔***\n"
+                        elif event.item.raw_item.type == "image_generation_call" and (img_result:=event.item.raw_item.result):
+                            image_data = base64.b64decode(img_result) #TODO: here
+                            
                         else:
                             name = event.item.raw_item.name if event.item.raw_item.type == "function_call" else event.item.raw_item.type
                             match event.item.raw_item.status:
