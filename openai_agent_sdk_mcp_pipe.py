@@ -124,6 +124,8 @@ class EventEmitter:
                 ),
             )
         )
+    async def __call__(self, *args: Any, **kwds: Any):
+        return await self.event_emitter(*args, **kwds) if self.event_emitter else None
 
 async def create_stdio_server(server_name:str, server_config:dict, cwd=None, timeout=30, tool_filter:Optional[ToolFilter] = None):
     params_kwargs = dict(server_config)
@@ -228,7 +230,21 @@ class Pipe:
 
         async def on_agent_end(self, context: RunContextWrapper, agent: Agent, output: Any) -> None:
             self.event_counter += 1
+            await self.collect_usage(context.usage)
             await self.event_emitter.status(f"{agent.name} Process Complete!",done=True)
+
+        async def collect_usage(self, usage:Usage):
+            usage_data = usage.__dict__
+            usage_data["input_tokens_details"] = usage.input_tokens_details.model_dump()
+            usage_data["output_tokens_details"] = usage.output_tokens_details.model_dump()
+            await self.event_emitter(
+                {
+                    "type": "chat:completion",
+                    "data": {
+                        "usage": usage_data
+                    },
+                }
+            )
         
         async def on_tool_start(self, context: RunContextWrapper[TContext], agent: Agent[TContext], tool: Tool) -> None:
             self.event_counter += 1
