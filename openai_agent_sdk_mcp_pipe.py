@@ -36,7 +36,7 @@ from agents.extensions import handoff_prompt
 from agents.run import DEFAULT_MAX_TURNS
 from agents.mcp import MCPServer, MCPServerStdio, MCPServerStdioParams, ToolFilterContext, ToolFilter
 from agents.mcp.util import MCPUtil
-from agents import tracing, set_tracing_disabled
+from agents import tracing, set_tracing_disabled, set_default_openai_api
 from datetime import datetime
 import base64
 
@@ -164,6 +164,10 @@ class Pipe:
             default="o4-mini",
             description="Reasoning Agent Model ID",
         )
+        REASEARCH_MODEL: str = Field(
+            default="o4-mini",
+            description="Research Agent Model ID",
+        )
         HTTP_PROXY: Optional[str] = Field(
             default=None,
             description="HTTP Proxy URL for OpenAI API requests",
@@ -179,6 +183,10 @@ class Pipe:
         ENABLE_TRACING: bool = Field(
             default=False,
             description="Whether to enable tracing for the agent",
+        )
+        USE_RESPONESES_API: bool = Field(
+            default=True,
+            description="Whether to use the OpenAI Responses API for streaming responses",
         )
         MCP_ENV_PATH: Optional[str] = Field(
             default=None,
@@ -295,6 +303,12 @@ class Pipe:
         # This is where you can add your custom pipelines like RAG.
         print(f"pipe:{__name__}")
 
+        if self.valves.USE_RESPONESES_API:
+            body["messages"] = self.transform_message_content(body["messages"])
+            set_default_openai_api("responses")
+        else:
+            set_default_openai_api("chat_completions")
+
         # Tracing setup
         set_tracing_disabled(not self.valves.ENABLE_TRACING)
         tracing.set_tracing_export_api_key(self.valves.OPENAI_API_KEY)
@@ -343,8 +357,6 @@ class Pipe:
 
         # Additional Tools
         self.image_gen_tool = ImageGenerationTool(tool_config={"type": "image_generation","quality": "low","size":"1024x1024","background":"transparent"})
-
-        body["messages"] = self.transform_message_content(body["messages"]) # TODO: Input Tokens not always cached.
         
         general_agent = self.create_general_agent()
 
@@ -420,7 +432,7 @@ Note:
     - You should state your reason before calling any tool."""
         research_agent = Agent(
             "Research Agent",
-            model="o4-mini",
+            model=self.valves.REASEARCH_MODEL,
             instructions=research_agent_instructions,
             mcp_servers=self.mcp_servers, # type: ignore
         )
@@ -479,6 +491,7 @@ Note:
                     elif event.item.type == "reasoning_item":
                         pass
                     else:
+                        print(f"Unhandled RunItem type: {event.item.type}")
                         pass  # Ignore other event types
                     continue
                     
