@@ -184,6 +184,10 @@ class Pipe:
             default=False,
             description="Whether to enable tracing for the agent",
         )
+        TRACING_API_KEY: Optional[str] = Field(
+            default=None,
+            description="API key for tracing export, if None, will use OPENAI_API_KEY",
+        )
         USE_RESPONESES_API: bool = Field(
             default=True,
             description="Whether to use the OpenAI Responses API for streaming responses",
@@ -311,7 +315,8 @@ class Pipe:
 
         # Tracing setup
         set_tracing_disabled(not self.valves.ENABLE_TRACING)
-        tracing.set_tracing_export_api_key(self.valves.OPENAI_API_KEY)
+        tracing_api_key = self.valves.TRACING_API_KEY or self.valves.OPENAI_API_KEY
+        tracing.set_tracing_export_api_key(tracing_api_key)
         tracing.processors.default_exporter().endpoint = self.valves.OPENAI_BASE_URL + "/traces/ingest"
 
         ev = EventEmitter(__event_emitter__)
