@@ -344,7 +344,7 @@ class Pipe:
         # Additional Tools
         self.image_gen_tool = ImageGenerationTool(tool_config={"type": "image_generation","quality": "low","size":"1024x1024","background":"transparent"})
 
-        body["messages"] = self.transform_message_content(body["messages"])
+        body["messages"] = self.transform_message_content(body["messages"]) # TODO: Input Tokens not always cached.
         
         general_agent = self.create_general_agent()
 
@@ -352,10 +352,12 @@ class Pipe:
 
         research_agent = self.create_research_agent()
 
-        triage_agent_instructions = f"""You can answer simple questions but you SHOULD handoff to the appropriate agent in most of the time and following these rules:
-    • If the question is general or requires basic coding, use the General Agent.
-    • If the question requires complex reasoning or advanced coding, use the Reasoning Agent.
-    • If the question requires deep research or detailed explanations, use the Research Agent."""
+        triage_agent_instructions = f"""You are a triage agent that handles only simple, straightforward questions. For ANY task that requires deeper analysis, research, coding, or complex reasoning, you MUST handoff to the appropriate agent:
+        • For general questions, basic information, or simple coding tasks: use the General Agent
+        • For complex reasoning, advanced coding, or detailed problem-solving: use the Reasoning Agent  
+        • For research, fact-checking, or questions requiring current information: use the Research Agent
+        
+    Remember: When in doubt, always handoff to a specialized agent rather than attempting the task yourself."""
         triage_agent = Agent(
             TRIGAE_AGENT_NAME,
             model=self.valves.TRIAGE_MODEL,
