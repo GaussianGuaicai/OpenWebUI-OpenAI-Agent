@@ -6,21 +6,23 @@
 
 ## Features
 
-- **Multi-agent collaboration**: Built-in General Agent, Reasoning Agent, and Triage Agent for automatic task routing.
-- **Tool calling**: Register and execute custom tools (FunctionTool) asynchronously.
+- **Multi-agent collaboration**: Built-in General Agent, Reasoning Agent, Research Agent, and Triage Agent for automatic task routing.
+- **Tool calling**: Register and execute custom tools (FunctionTool) asynchronously. Includes built-in support for image generation.
 - **Streaming output**: Real-time event streaming for responsive user experience.
 - **Extensible**: Easily integrate custom models, tools, and pipeline logic.
 - **MCP support**: Optional integration with MCP servers for advanced tool execution and environment isolation.
+- **Observability**: Optional tracing support for debugging and monitoring agent behavior.
 
 ## Main Files
 
 - `openai_agent_sdk_pipe.py`: Main pipeline using the OpenAI Agent SDK, including agent definitions, tool registration, and event stream handling.
-- `openai_agent_sdk_mcp_pipe.py`: Pipeline with MCP server support for advanced tool execution and environment management.
+- `openai_agent_sdk_mcp_pipe.py`: An advanced pipeline with MCP (Multi-Component Pipeline) server support for robust tool execution and environment management.
 
 ## Agents
 
 - **General Agent**: Handles general questions and basic coding tasks.
 - **Reasoning Agent**: Handles complex reasoning and advanced coding tasks.
+- **Research Agent**: Performs in-depth research and answers questions requiring current information.
 - **Triage Agent**: Automatically routes user requests to the appropriate agent.
 
 ## Usage
