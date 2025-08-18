@@ -30,7 +30,7 @@ import json
 from openai import AsyncOpenAI
 from openai.types.responses import ResponseTextDeltaEvent
 from openai.types import Reasoning
-from agents import AgentHooks, ItemHelpers, MessageOutputItem, ModelSettings, RunItem, RunItemStreamEvent, RunResultStreaming, TContext, Tool, ToolCallItem, ToolCallOutputItem, set_default_openai_client, function_tool
+from agents import AgentHooks, ItemHelpers, MessageOutputItem, ModelSettings, RunItem, RunItemStreamEvent, RunResult, RunResultStreaming, TContext, Tool, ToolCallItem, ToolCallOutputItem, set_default_openai_client, function_tool
 from agents import Agent, Runner, RunHooks, RunContextWrapper, Usage, FunctionTool, RunContextWrapper, WebSearchTool, ImageGenerationTool
 from agents.extensions import handoff_prompt
 from agents.run import DEFAULT_MAX_TURNS
@@ -155,6 +155,10 @@ class Pipe:
         TRIAGE_MODEL: str = Field(
             default="gpt-4.1-nano",
             description="Triage Agent Model ID",
+        )
+        TRIAGE_REASONING_EFFORT: Optional[str] = Field(
+            default=None,
+            description="Reasoning effort for Triage Agent (minimal, low, medium, high), if None, no reasoning will be applied",
         )
         GENERAL_MODEL: str = Field(
             default="gpt-4.1",
@@ -317,6 +321,11 @@ class Pipe:
         else:
             set_default_openai_api("chat_completions")
 
+        stream = body.get('stream', True)
+        stream_options = body.get('stream_options', {})
+        extra_args = {k: v for k, v in body.items() if k not in ["messages","model",'stream','stream_options']}
+        print(extra_args)
+
         # Tracing setup
         set_tracing_disabled(not self.valves.ENABLE_TRACING)
         tracing_api_key = self.valves.TRACING_API_KEY or self.valves.OPENAI_API_KEY
@@ -368,7 +377,7 @@ class Pipe:
         # Additional Tools
         self.image_gen_tool = ImageGenerationTool(tool_config={"type": "image_generation","quality": "low","size":"1024x1024","background":"transparent"})
         
-        general_agent = self.create_general_agent()
+        general_agent = self.create_general_agent(extra_args=extra_args)
 
         reasoning_agent = self.create_reasoning_agent()
 
@@ -380,27 +389,39 @@ class Pipe:
         • For research, fact-checking, or questions requiring current information: use the Research Agent
         
     Remember: When in doubt, always handoff to a specialized agent rather than attempting the task yourself."""
+        triage_model_settings = ModelSettings(parallel_tool_calls=False)
+        if self.valves.TRIAGE_REASONING_EFFORT:
+            triage_model_settings.reasoning = Reasoning(effort=self.valves.TRIAGE_REASONING_EFFORT) # type: ignore
+
         triage_agent = Agent(
             TRIGAE_AGENT_NAME,
             model=self.valves.TRIAGE_MODEL,
             instructions=triage_agent_instructions,
             handoffs=[general_agent,reasoning_agent,research_agent],
-            model_settings=ModelSettings(parallel_tool_calls=False),
+            model_settings=triage_model_settings,
             mcp_servers=self.mcp_servers, # type: ignore
         )
 
-        result = Runner.run_streamed(
-            triage_agent, body["messages"],
-            max_turns=self.valves.MAX_TURNS,
-            hooks=ev_hooks,
-            context=self.InputContext()
-        )
+        if stream:
+            result = Runner.run_streamed(
+                triage_agent, body["messages"],
+                max_turns=self.valves.MAX_TURNS,
+                hooks=ev_hooks,
+                context=self.InputContext()
+            )
+        else:
+            result = await Runner.run(
+                triage_agent, body["messages"],
+                max_turns=self.valves.MAX_TURNS,
+                hooks=ev_hooks,
+                context=self.InputContext()
+            )
 
         await ev.status("Processing...",done=False)
 
         return self.run(result)
 
-    def create_reasoning_agent(self):
+    def create_reasoning_agent(self,extra_args:Optional[dict[str,Any]] = None):
         reasoning_agent_instructions = f"""You perform complex reasoning tasks and provide detailed explanations, also perform complex coding tasks.
 When handling any user query about current or time-sensitive events, always invoke the appropriate external tools (e.g., web search, page reader, fact-checker) to retrieve, verify, and cite the latest information before generating your response.
 Note:
@@ -410,16 +431,14 @@ Note:
             model=self.valves.REASONING_MODEL,
             instructions=reasoning_agent_instructions,
             handoff_description="Use this agent for complex reasoning tasks that require detailed explanations or advanced coding.",
-            model_settings=ModelSettings(
-                reasoning=Reasoning(effort="medium"),
-            ),
+            model_settings=ModelSettings(extra_args=extra_args),
             mcp_servers=self.mcp_servers, # type: ignore
             # tools=[self.image_gen_tool],
         )
         
         return reasoning_agent
 
-    def create_general_agent(self):
+    def create_general_agent(self,extra_args:Optional[dict[str,Any]] = None):
         general_agent_instructions = f"""You answer general questions and perform basic coding tasks.
 When handling any user query about current or time-sensitive events, always invoke the appropriate external tools (e.g., web search, page reader, fact-checker) to retrieve, verify, and cite the latest information before generating your response.
 Note:
@@ -431,11 +450,12 @@ Note:
             handoff_description="Use this agent for general questions and basic coding tasks.",
             mcp_servers=self.mcp_servers, # type: ignore
             # tools=[self.image_gen_tool]
+            model_settings=ModelSettings(extra_args=extra_args),
         )
         
         return general_agent
     
-    def create_research_agent(self):
+    def create_research_agent(self,extra_args:Optional[dict[str,Any]] = None):
         research_agent_instructions = f"""You perform deep empirical research based on the user's question.
 When handling any user query about current or time-sensitive events, always invoke the appropriate external tools (e.g., web search, page reader, fact-checker) to retrieve, verify, and cite the latest information before generating your response.
 Note:
@@ -445,6 +465,7 @@ Note:
             model=self.valves.REASEARCH_MODEL,
             instructions=research_agent_instructions,
             mcp_servers=self.mcp_servers, # type: ignore
+            model_settings=ModelSettings(extra_args=extra_args),
         )
         
         return research_agent
@@ -458,9 +479,13 @@ Note:
             else:
                 logging.info(f"{self.valves.MCP_ENV_PATH} already in PATH")
 
-    async def run(self,result:RunResultStreaming):
+    async def run(self,result:Union[RunResult, RunResultStreaming]):
         try:
-            async for event in result.stream_events():
+            if isinstance(result, RunResult):
+                # If it's a RunResult, we can directly yield the result
+                yield result.final_output
+                
+            async for event in result.stream_events(): # type: ignore
                 # We'll ignore the raw responses event deltas
                 if event.type == "raw_response_event" and isinstance(event.data, ResponseTextDeltaEvent):
                     yield event.data.delta
@@ -499,7 +524,8 @@ Note:
                     elif event.item.type == "message_output_item":
                         pass
                     elif event.item.type == "reasoning_item":
-                        pass
+                        for summary in event.item.raw_item.summary:
+                            yield f"\n***Reasoning: {summary.text}***\n"
                     else:
                         print(f"Unhandled RunItem type: {event.item.type}")
                         pass  # Ignore other event types
