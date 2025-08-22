@@ -164,9 +164,17 @@ class Pipe:
             default="gpt-4.1",
             description="General Agent Model ID",
         )
+        GENERAL_REASONING_EFFORT: Optional[str] = Field(
+            default=None,
+            description="Reasoning effort for General Agent (minimal, low, medium, high), if None, no reasoning will be applied",
+        )
         REASONING_MODEL: str = Field(
             default="o4-mini",
             description="Reasoning Agent Model ID",
+        )
+        REASONING_REASONING_EFFORT: Optional[str] = Field(
+            default=None,
+            description="Reasoning effort for Reasoning Agent (minimal, low, medium, high), if None, no reasoning will be applied",
         )
         REASEARCH_MODEL: str = Field(
             default="o4-mini",
@@ -402,16 +410,17 @@ class Pipe:
             mcp_servers=self.mcp_servers, # type: ignore
         )
 
+        messages = self.transform_message_content(body.get("messages", []))
         if stream:
             result = Runner.run_streamed(
-                triage_agent, body["messages"],
+                triage_agent, messages,
                 max_turns=self.valves.MAX_TURNS,
                 hooks=ev_hooks,
                 context=self.InputContext()
             )
         else:
             result = await Runner.run(
-                triage_agent, body["messages"],
+                triage_agent, messages,
                 max_turns=self.valves.MAX_TURNS,
                 hooks=ev_hooks,
                 context=self.InputContext()
@@ -426,6 +435,10 @@ class Pipe:
 When handling any user query about current or time-sensitive events, always invoke the appropriate external tools (e.g., web search, page reader, fact-checker) to retrieve, verify, and cite the latest information before generating your response.
 Note:
     - You should state your reason before calling any tool."""
+        if self.valves.REASONING_REASONING_EFFORT:
+            extra_args = extra_args or {}
+            extra_args["reasoning_effort"] = self.valves.REASONING_REASONING_EFFORT
+            
         reasoning_agent = Agent(
             "Reasoning Agent",
             model=self.valves.REASONING_MODEL,
@@ -443,6 +456,10 @@ Note:
 When handling any user query about current or time-sensitive events, always invoke the appropriate external tools (e.g., web search, page reader, fact-checker) to retrieve, verify, and cite the latest information before generating your response.
 Note:
     - You should reasoning before calling any tool."""
+        if self.valves.GENERAL_REASONING_EFFORT:
+            extra_args = extra_args or {}
+            extra_args["reasoning_effort"] = self.valves.GENERAL_REASONING_EFFORT
+
         general_agent = Agent(
             "General Agent",
             model=self.valves.GENERAL_MODEL,
@@ -460,6 +477,10 @@ Note:
 When handling any user query about current or time-sensitive events, always invoke the appropriate external tools (e.g., web search, page reader, fact-checker) to retrieve, verify, and cite the latest information before generating your response.
 Note:
     - You should state your reason before calling any tool."""
+        if self.valves.REASONING_REASONING_EFFORT:
+            extra_args = extra_args or {}
+            extra_args["reasoning_effort"] = self.valves.REASONING_REASONING_EFFORT
+
         research_agent = Agent(
             "Research Agent",
             model=self.valves.REASEARCH_MODEL,
