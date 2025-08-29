@@ -30,8 +30,8 @@ import json
 from openai import AsyncOpenAI
 from openai.types.responses import ResponseTextDeltaEvent
 from openai.types import Reasoning
-from agents import AgentHooks, ItemHelpers, MessageOutputItem, ModelSettings, RunItem, RunItemStreamEvent, RunResult, RunResultStreaming, TContext, Tool, ToolCallItem, ToolCallOutputItem, set_default_openai_client, function_tool
-from agents import Agent, Runner, RunHooks, RunContextWrapper, Usage, FunctionTool, RunContextWrapper, WebSearchTool, ImageGenerationTool
+from agents import AgentHooks, ItemHelpers, MessageOutputItem, ModelSettings, RunItem, RunItemStreamEvent, RunResult, RunResultStreaming, TContext, TResponseInputItem, Tool, ToolCallItem, ToolCallOutputItem, set_default_openai_client, function_tool
+from agents import Agent, Runner, RunHooks, RunContextWrapper, Usage, FunctionTool, RunContextWrapper, WebSearchTool, ImageGenerationTool, Session, SQLiteSession
 from agents.extensions import handoff_prompt
 from agents.run import DEFAULT_MAX_TURNS
 from agents.mcp import MCPServer, MCPServerStdio, MCPServerStdioParams, ToolFilterContext, ToolFilter
@@ -295,6 +295,7 @@ class Pipe:
         self.name = "openai-agent-sdk/"
         self.mcp_servers:list[MCPServer] = []
         self.mcp_configs = {}
+        self.sessions:dict[str,Session] = {}
         
         logging.info(f"OpenAI Agent SDK Pipe initialized with valves: {self.valves.model_dump()}")
 
@@ -322,9 +323,9 @@ class Pipe:
     ):
         # This is where you can add your custom pipelines like RAG.
         print(f"pipe:{__name__}")
+        print(f"Metadata: {__metadata__}")
 
         if self.valves.USE_RESPONESES_API:
-            body["messages"] = self.transform_message_content(body["messages"])
             set_default_openai_api("responses")
         else:
             set_default_openai_api("chat_completions")
@@ -418,44 +419,77 @@ Your role is to evaluate incoming user queries and decide how they should be han
             mcp_servers=self.mcp_servers, # type: ignore
         )
 
+        chat_id = __metadata__["chat_id"]
+        self.sessions[chat_id] = self.sessions.get(chat_id, SQLiteSession(chat_id))
         messages = self.transform_message_content(body.get("messages", []))
+        
+        # Verify and sync session messages
+        await self.sync_session_messages(chat_id, messages)
+        
         if stream:
             result = Runner.run_streamed(
-                triage_agent, messages,
+                triage_agent, 
+                input=await self.sessions[chat_id].get_items(),
                 max_turns=self.valves.MAX_TURNS,
                 hooks=ev_hooks,
-                context=self.InputContext()
+                context=self.InputContext(),
             )
         else:
             result = await Runner.run(
-                triage_agent, messages,
+                triage_agent,
+                input=await self.sessions[chat_id].get_items(),
                 max_turns=self.valves.MAX_TURNS,
                 hooks=ev_hooks,
-                context=self.InputContext()
+                context=self.InputContext(),
             )
 
         await ev.status("Processing...",done=False)
 
         return self.run(result)
 
+    async def sync_session_messages(self, chat_id:str, messages:list[TResponseInputItem]):
+        session_items = await self.sessions[chat_id].get_items()
+
+        # Find common prefix length
+        k = 0
+        for a, b in zip(session_items, messages):
+            if a == b:
+                k += 1
+            else:
+                print(f"Divergence at index {k}: session item {a} != incoming message {b}")
+                break
+
+        if k < len(session_items):
+            # Diverged or messages were shortened: reset to incoming messages
+            await self.sessions[chat_id].clear_session()
+            await self.sessions[chat_id].add_items(messages)
+        elif k < len(messages):
+            # Append only new tail
+            await self.sessions[chat_id].add_items(messages[k:])
+
     def create_reasoning_agent(self,extra_args:Optional[dict[str,Any]] = None):
         reasoning_agent_instructions = f"""You perform complex reasoning tasks and provide detailed explanations, also perform complex coding tasks.
 When handling any user query about current or time-sensitive events, always invoke the appropriate external tools (e.g., web search, page reader, fact-checker) to retrieve, verify, and cite the latest information before generating your response.
 Note:
     - You should state your reason before calling any tool."""
-        if self.valves.REASONING_REASONING_EFFORT:
-            extra_args = extra_args or {}
-            extra_args["reasoning_effort"] = self.valves.REASONING_REASONING_EFFORT
-            
+        print(f"Reasoning Agent extra_args: {extra_args}")
         reasoning_agent = Agent(
             "Reasoning Agent",
             model=self.valves.REASONING_MODEL,
             instructions=reasoning_agent_instructions,
             handoff_description="Use this agent for complex reasoning tasks that require detailed explanations or advanced coding.",
-            model_settings=ModelSettings(extra_args=extra_args),
+            model_settings=ModelSettings(),
             mcp_servers=self.mcp_servers, # type: ignore
             # tools=[self.image_gen_tool],
         )
+
+        if self.valves.REASONING_REASONING_EFFORT:
+            reasoning_agent.model_settings.reasoning = Reasoning(effort=self.valves.REASONING_REASONING_EFFORT) # pyright: ignore[reportArgumentType]
+        
+        if extra_args:
+            if 'reasoning_effort' in extra_args:
+                reasoning_agent.model_settings.reasoning = Reasoning(effort=extra_args.pop('reasoning_effort'))
+            reasoning_agent.model_settings.extra_args = extra_args
         
         return reasoning_agent
 
@@ -464,10 +498,7 @@ Note:
 When handling any user query about current or time-sensitive events, always invoke the appropriate external tools (e.g., web search, page reader, fact-checker) to retrieve, verify, and cite the latest information before generating your response.
 Note:
     - You should reasoning before calling any tool."""
-        if self.valves.GENERAL_REASONING_EFFORT:
-            extra_args = extra_args or {}
-            extra_args["reasoning_effort"] = self.valves.GENERAL_REASONING_EFFORT
-
+        print(f"General Agent extra_args: {extra_args}")
         general_agent = Agent(
             "General Agent",
             model=self.valves.GENERAL_MODEL,
@@ -475,8 +506,16 @@ Note:
             handoff_description="Use this agent for general questions and basic coding tasks.",
             mcp_servers=self.mcp_servers, # type: ignore
             # tools=[self.image_gen_tool]
-            model_settings=ModelSettings(extra_args=extra_args),
+            model_settings=ModelSettings(),
         )
+
+        if self.valves.GENERAL_REASONING_EFFORT:
+            general_agent.model_settings.reasoning = Reasoning(effort=self.valves.GENERAL_REASONING_EFFORT) # pyright: ignore[reportArgumentType]
+
+        if extra_args:
+            if 'reasoning_effort' in extra_args:
+                general_agent.model_settings.reasoning = Reasoning(effort=extra_args.pop('reasoning_effort'))
+            general_agent.model_settings.extra_args = extra_args
         
         return general_agent
     
@@ -485,17 +524,21 @@ Note:
 When handling any user query about current or time-sensitive events, always invoke the appropriate external tools (e.g., web search, page reader, fact-checker) to retrieve, verify, and cite the latest information before generating your response.
 Note:
     - You should state your reason before calling any tool."""
-        if self.valves.REASONING_REASONING_EFFORT:
-            extra_args = extra_args or {}
-            extra_args["reasoning_effort"] = self.valves.REASONING_REASONING_EFFORT
-
+        print(f"Research Agent extra_args: {extra_args}")
         research_agent = Agent(
             "Research Agent",
             model=self.valves.REASEARCH_MODEL,
             instructions=research_agent_instructions,
             mcp_servers=self.mcp_servers, # type: ignore
-            model_settings=ModelSettings(extra_args=extra_args),
+            model_settings=ModelSettings(),
         )
+        if self.valves.REASONING_REASONING_EFFORT:
+            research_agent.model_settings.reasoning = Reasoning(effort=self.valves.REASONING_REASONING_EFFORT) # pyright: ignore[reportArgumentType]
+        
+        if extra_args:
+            if 'reasoning_effort' in extra_args:
+                research_agent.model_settings.reasoning = Reasoning(effort=extra_args.pop('reasoning_effort'))
+            research_agent.model_settings.extra_args = extra_args
         
         return research_agent
 
@@ -555,6 +598,8 @@ Note:
                     elif event.item.type == "reasoning_item":
                         for summary in event.item.raw_item.summary:
                             yield f"\n***Reasoning: {summary.text}***\n"
+                    elif event.item.type == 'handoff_output_item':
+                        print(f"Handoff to agent: {event.item.target_agent.name}")
                     else:
                         print(f"Unhandled RunItem type: {event.item.type}")
                         pass  # Ignore other event types
